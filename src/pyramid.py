@@ -14,14 +14,17 @@ class PyramidMultimodalTransformer(nn.Module):
         feature_dim: dimension of the video and audio embeddings
         num_heads: number of heads in the multi-head attention layers
         num_layers: number of layers in the transformer
+        dropout: dropout probability
+        device: torch device
     """
 
-    def __init__(self, feature_dim, num_heads, num_layers):
+    def __init__(self, feature_dim, num_heads, num_layers, dropout, device):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dropout = dropout
+        self.device = device
 
         self.layers = []
         for i in range(1, num_layers + 1):
@@ -30,6 +33,7 @@ class PyramidMultimodalTransformer(nn.Module):
                     feature_dim=feature_dim,
                     num_heads=num_heads,
                     layer_num=i,
+                    dropout=dropout,
                     device=self.device,
                 )
             )
@@ -61,25 +65,30 @@ class PyramidMultimodalTransformerLayer(nn.Module):
         feature_dim: dimension of the video and audio embeddings
         num_heads: number of heads in the multi-head attention layers
         layer_num: the layer number (1-indexed)
+        dropout: dropout probability
+        device: torch device
     """
 
-    def __init__(self, feature_dim, num_heads, layer_num, device):
+    def __init__(self, feature_dim, num_heads, layer_num, dropout, device):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_heads = num_heads
         self.layer_num = layer_num
+        self.dropout = dropout
         self.device = device
 
         self.attention_one = MultimodalAttentionBlock(
             feature_dim=feature_dim,
             num_heads=num_heads,
             layer_num=layer_num,
+            dropout=dropout,
             device=device,
         )
         self.attention_two = MultimodalAttentionBlock(
             feature_dim=feature_dim,
             num_heads=num_heads,
             layer_num=layer_num,
+            dropout=dropout,
             device=device,
         )
 
@@ -144,7 +153,7 @@ class MultimodalAttentionBlock(nn.Module):
         num_heads,
         layer_num,
         device,
-        dropout=0.2,
+        dropout,
     ):
         super().__init__()
         self.feature_dim = feature_dim

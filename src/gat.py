@@ -1,7 +1,5 @@
 import torch
 from torch import nn
-from matplotlib import pyplot as plt
-import networkx as nx
 import numpy as np
 
 
@@ -40,7 +38,7 @@ class GraphAttentionNetwork(nn.Module):
 
         num_heads_per_layer = [1] + num_heads_per_layer
 
-        self.gat_net = nn.Sequential(
+        gat_layers = [
             GATLayer(
                 num_in_features=num_features_per_layer[i] * num_heads_per_layer[i],
                 num_out_features=num_features_per_layer[i + 1],
@@ -53,7 +51,9 @@ class GraphAttentionNetwork(nn.Module):
                 log_attention_weights=log_attention_weights,
             )
             for i in range(num_of_layers)
-        )
+        ]
+
+        self.gat_net = nn.Sequential(*gat_layers)
 
     def forward(self, data):
         return self.gat_net(data)
@@ -306,21 +306,25 @@ if __name__ == "__main__":
     # create a random adjacency list
     num_of_nodes = 5
     num_of_neighbors = 2
+    num_batches = 2
+
+    # we will treat each batch as a different graph, so we have num_batches disconnected
+    # graphs
     adjacency_list_dict = {
-        node_id: np.random.choice(
-            [i for i in range(num_of_nodes) if i != node_id],
+        node_id
+        + batch
+        * num_of_nodes: np.random.choice(
+            [
+                i
+                for i in range(num_of_nodes * batch, num_of_nodes * (batch + 1))
+                if i != node_id
+            ],  # fmt: skip # noqa: E501
             num_of_neighbors,
             replace=False,
         ).tolist()
         for node_id in range(num_of_nodes)
+        for batch in range(num_batches)
     }
-
-    # visualize the adjacency list with a figure
-    plt.figure(figsize=(4, 4))
-    nx_graph = nx.DiGraph(adjacency_list_dict)
-    pos = nx.spring_layout(nx_graph)
-    nx.draw(nx_graph, pos, with_labels=True, node_color="#00b4d9")
-    plt.savefig("graph.png", dpi=300)
 
     # build the edge index
     edge_index = build_edge_index(adjacency_list_dict, num_of_nodes, device="cpu")
@@ -328,7 +332,7 @@ if __name__ == "__main__":
     # create some random node features
     num_of_features_per_node = 8
     in_nodes_features = torch.rand(
-        num_of_nodes, num_of_features_per_node, dtype=torch.float
+        num_batches * num_of_nodes, num_of_features_per_node, dtype=torch.float
     )
 
     # instantiate a GAT layer
@@ -345,8 +349,8 @@ if __name__ == "__main__":
     )
 
     # run it
-    out_nodes_features, edge_index = gat_layer((in_nodes_features, edge_index))
+    out_nodes_features, edge_indexes = gat_layer((in_nodes_features, edge_index))
     print(out_nodes_features.shape)
-    print(edge_index.shape)
+    print(edge_indexes.shape)
     print(out_nodes_features)
-    print(edge_index)
+    print(edge_indexes)

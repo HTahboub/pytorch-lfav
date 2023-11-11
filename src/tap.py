@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+
 class TemporalAttentionPooling(nn.Module):
     """Temporal Attention Pooling (TAP) layer from the LFAV paper.  From the paper:
 
@@ -15,11 +16,12 @@ class TemporalAttentionPooling(nn.Module):
         feature_dim: dimension of the input features
         num_classes: number of classes in the dataset
     """
+
     def __init__(self, feature_dim, num_classes):
         super().__init__()
         self.sl_fc = nn.Linear(feature_dim, num_classes)
         self.vl_fc = nn.Linear(feature_dim, num_classes)
-    
+
     def forward(self, video_snippet_embeddings, audio_snippet_embeddings):
         """Forward pass of the TAP layer.
 
@@ -43,7 +45,16 @@ class TemporalAttentionPooling(nn.Module):
         video_snippet_weights = torch.softmax(vl_video_fc_out, dim=1)
         audio_snippet_weights = torch.softmax(vl_audio_fc_out, dim=1)
 
-        vl_video_predictions = torch.sum(video_snippet_weights * sl_video_predictions, dim=1)
-        vl_audio_predictions = torch.sum(audio_snippet_weights * sl_audio_predictions, dim=1)
+        vl_video_predictions = torch.sum(
+            video_snippet_weights * sl_video_predictions, dim=1
+        )
+        vl_audio_predictions = torch.sum(
+            audio_snippet_weights * sl_audio_predictions, dim=1
+        )
 
-        return vl_video_predictions, vl_audio_predictions, sl_video_predictions, sl_audio_predictions
+        return (
+            vl_video_predictions,
+            vl_audio_predictions,
+            sl_video_predictions,
+            sl_audio_predictions,
+        )

@@ -24,7 +24,7 @@ class GraphEventAttentionModule(nn.Module):
                 dropout=dropout,
                 log_attention_weights=False,
             )
-            for _ in num_layers
+            for _ in range(num_layers)
         ]
         self.audio_modules = nn.ModuleList(audio_modules)
 
@@ -38,12 +38,12 @@ class GraphEventAttentionModule(nn.Module):
                 dropout=dropout,
                 log_attention_weights=False,
             )
-            for _ in num_layers
+            for _ in range(num_layers)
         ]
         self.video_modules = nn.ModuleList(self.video_modules)
 
     @abstractmethod
-    def build_adjacency(snippet_preds, confidence_threshold):
+    def _build_adjacency(snippet_preds, confidence_threshold):
         """Build adjacency dictionary from snippet pred confidences. From the paper:
 
         "We construct a graph for each event category of each modality, where each
@@ -59,45 +59,101 @@ class GraphEventAttentionModule(nn.Module):
             confidence_threshold: Confidence threshold for semantic edges.
 
         Returns:
-            List[Dict[int, List[int]]]: List of adjacency dictionaries, one for each
-                batch.
+            Dict[int, List[int]]: Adjacency dictionary, where the keys are node indices
+                and the values are lists of adjacent node indices. Represents a set of
+                batch_size disconnected graphs, one for each video (snippet sequence).
         """
-        adj_dicts = []
+        batch_size, num_snippets = snippet_preds.shape
+        adj_dict = {node: [] for node in range(batch_size * num_snippets)}
+        # we will make batch_size disconnected graphs
         for i in range(snippet_preds.shape[0]):
-            adj_dict = {node: [] for node in range(snippet_preds[i].shape[0])}
             # temporal edges
-            for j in range(snippet_preds.shape[1] - 1):
+            for j in range(num_snippets * i, num_snippets * (i + 1) - 1):
                 adj_dict[j].append(j + 1)
                 adj_dict[j + 1].append(j)
             # semantic edges
             nodes = []
-            for j in range(snippet_preds.shape[1]):
-                if snippet_preds[i, j] >= confidence_threshold:
+            for j in range(num_snippets * i, num_snippets * (i + 1)):
+                if snippet_preds[i, j % num_snippets] >= confidence_threshold:
                     nodes.append(j)
             for node in nodes:
                 for other_node in nodes:
                     if node != other_node and other_node not in adj_dict[node]:
                         adj_dict[node].append(other_node)
-            adj_dicts.append(adj_dict)
-        return adj_dicts
+        return adj_dict
 
     def forward(
-        self, audio_features, video_features, video_snippet_preds, audio_snippet_preds
+        self,
+        video_features,
+        audio_features,
+        video_snippet_preds,
+        audio_snippet_preds,
+        confidence_threshold,
     ):
-        audio_adj = []
-        video_adj = []
+        """Forward pass of the GraphEventAttentionModule. Takes in audio and video
+        features and snippet-level predictions, and outputs event-level predictions.
+
+        Args:
+            video_features: Video features of (batch_size, num_snippets, feature_dim)
+            audio_features: Audio features of (batch_size, num_snippets, feature_dim)
+            video_snippet_preds: Video snippet-level predictions of
+                (batch_size, num_snippets, num_events)
+            audio_snippet_preds: Audio snippet-level predictions of
+                (batch_size, num_snippets, num_events)
+            confidence_threshold: Confidence threshold for semantic edges.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Tuple of audio and video event-level
+                predictions of (batch_size, num_events)
+        """
+        batch_size, num_snippets, feature_dim = audio_features.shape
+        audio_event_adj = []
+        video_event_adj = []
         for i in range(self.num_events):
-            audio_adj.append(
-                self.build_adjacency(audio_features, audio_snippet_preds[:, :, i])
+            audio_adj = GraphEventAttentionModule._build_adjacency(
+                audio_snippet_preds[:, :, i], confidence_threshold
             )
-            video_adj.append(
-                self.build_adjacency(video_features, video_snippet_preds[:, :, i])
+            video_adj = GraphEventAttentionModule._build_adjacency(
+                video_snippet_preds[:, :, i], confidence_threshold
             )
+            audio_adj = build_edge_index(
+                audio_adj,
+                num_of_nodes=num_snippets * batch_size,
+                device=audio_features.device,
+            )
+            video_adj = build_edge_index(
+                video_adj,
+                num_of_nodes=num_snippets * batch_size,
+                device=video_features.device,
+            )
+            audio_event_adj.append(audio_adj)
+            video_event_adj.append(video_adj)
+
+        # audio
+        for module in self.audio_modules:
+            aggregated = torch.zeros_like(audio_features)
+            for i in range(self.num_events):
+                gat_features, _ = module(
+                    (audio_features.reshape(-1, self.feature_dim), audio_event_adj[i])
+                )
+                aggregated += gat_features.view(*audio_features.shape)
+            audio_features = aggregated / self.num_events
+
+        # video
+        for module in self.video_modules:
+            aggregated = torch.zeros_like(video_features)
+            for i in range(self.num_events):
+                gat_features, _ = module(
+                    (video_features.reshape(-1, self.feature_dim), video_event_adj[i])
+                )
+                aggregated += gat_features.view(*video_features.shape)
+            video_features = aggregated / self.num_events
+
+        return video_features, audio_features
 
 
 if __name__ == "__main__":
-    # test build_adjacency
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # sanity check _build_adjacency
     snippet_preds = torch.tensor(
         [
             [0.9, 0.8, 0.7, 0.6, 0.5, 0.4],
@@ -105,11 +161,40 @@ if __name__ == "__main__":
             [0.1, 0.8, 0.1, 0.6, 0.5, 0.4],
         ],
         dtype=torch.float,
-        requires_grad=True,
-        device=device,
     )
     confidence_threshold = 0.5
-    adj_dicts = GraphEventAttentionModule.build_adjacency(
+    adj_dict = GraphEventAttentionModule._build_adjacency(
         snippet_preds, confidence_threshold
     )
-    print(*adj_dicts, sep="\n")
+    print(adj_dict, sep="\n")
+
+    # sanity check forward
+    feature_dim = 6
+    num_events = 3
+    num_layers = 2
+    num_heads = 1
+    gat_depth = 2
+    dropout = 0.0
+    num_batches = 3
+    num_snippets = 6
+    confidence_threshold = 0.5
+
+    torch.manual_seed(42)
+    audio_features = torch.rand((num_batches, num_snippets, feature_dim))
+    video_features = torch.rand((num_batches, num_snippets, feature_dim))
+    video_snippet_preds = torch.rand((num_batches, num_snippets, num_events))
+    audio_snippet_preds = torch.rand((num_batches, num_snippets, num_events))
+    module = GraphEventAttentionModule(
+        feature_dim, num_events, num_layers, num_heads, gat_depth, dropout
+    )
+    audio_features_out, video_features_out = module(
+        video_features,
+        audio_features,
+        video_snippet_preds,
+        audio_snippet_preds,
+        confidence_threshold,
+    )
+    print("input audio shape:", audio_features.shape)
+    print("input video shape:", video_features.shape)
+    print("output audio shape:", audio_features_out.shape)
+    print("output video shape:", video_features_out.shape)
