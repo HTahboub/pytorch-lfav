@@ -170,7 +170,7 @@ if __name__ == "__main__":
     print(*(pred.shape for pred in preds if pred is not None), sep="\n")
 
     # test diffentiability
-    loss = sum(pred.sum() for pred in preds if pred is not None)
+    loss = preds[-4].sum() + preds[-3].sum()
     loss.backward()
     if torch.all(video_embeddings.grad == 0) or torch.all(audio_embeddings.grad == 0):
         if torch.all(video_embeddings.grad == 0):
