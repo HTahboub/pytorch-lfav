@@ -82,6 +82,50 @@ class GraphEventAttentionModule(nn.Module):
                         adj_dict[node].append(other_node)
         return adj_dict
 
+    @staticmethod
+    def calculate_event_features(
+        video_features,
+        audio_features,
+        sl_video_predictions,
+        sl_audio_predictions,
+        num_events,
+    ):
+        """Calculate event features from snippet-level predictions and audio/video
+        features. From the paper:
+
+        "Based on the refined event-aware snippet features, we employ the TAP module to
+        obtain their importance (i.e., attention weight) of the specific event, then
+        perform weighted aggregation over the snippet features belonging to the same
+        event to generate the final event feature."
+
+        Args:
+            video_features: Video features of (batch_size, num_snippets, feature_dim)
+            audio_features: Audio features of (batch_size, num_snippets, feature_dim)
+            sl_video_predictions: Video snippet-level predictions of
+                (batch_size, num_snippets, num_events)
+            sl_audio_predictions: Audio snippet-level predictions of
+                (batch_size, num_snippets, num_events)
+
+        Returns:
+            video_event_features: Video event features of
+                (batch_size, num_events, feature_dim)
+            audio_event_features: Audio event features of
+                (batch_size, num_events, feature_dim)
+        """
+        batch_size, num_snippets, feature_dim = video_features.shape
+
+        normalized_weights = torch.softmax(sl_video_predictions, dim=2)
+        video_event_features = torch.sum(
+            video_features.unsqueeze(2) * normalized_weights.unsqueeze(3), dim=1
+        )
+
+        normalized_weights = torch.softmax(sl_audio_predictions, dim=2)
+        audio_event_features = torch.sum(
+            audio_features.unsqueeze(2) * normalized_weights.unsqueeze(3), dim=1
+        )
+
+        return video_event_features, audio_event_features
+
     def forward(
         self,
         video_features,
@@ -103,8 +147,8 @@ class GraphEventAttentionModule(nn.Module):
             confidence_threshold: Confidence threshold for semantic edges.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Tuple of audio and video event-level
-                predictions of (batch_size, num_events)
+            video_features: Video features of (batch_size, num_snippets, feature_dim)
+            audio_features: Audio features of (batch_size, num_snippets, feature_dim)
         """
         batch_size, num_snippets, feature_dim = audio_features.shape
         audio_event_adj = []

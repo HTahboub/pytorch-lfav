@@ -1,5 +1,6 @@
 import torch
 from graph import GraphEventAttentionModule
+from interaction import EventInteractionModule
 from pyramid import PyramidMultimodalTransformer
 from tap import TemporalAttentionPooling
 from torch import nn
@@ -63,7 +64,13 @@ class LFAVModel(nn.Module):
         )
 
         # stage three
-        # TODO
+        self.event_interaction = EventInteractionModule(
+            feature_dim=feature_dim,
+            num_events=num_events,
+            num_heads=num_pmt_heads,
+            dropout=graph_dropout,
+            device=device,
+        )
 
     def forward(self, video_embeddings, audio_embeddings):
         """Forward pass of the LFAV event-centric framework.
@@ -110,8 +117,23 @@ class LFAVModel(nn.Module):
             video_snippet_embeddings=video_embeddings,
             audio_snippet_embeddings=audio_embeddings,
         )
+        ve_features, ae_features = GraphEventAttentionModule.calculate_event_features(
+            video_features=video_embeddings,
+            audio_features=audio_embeddings,
+            sl_video_predictions=s2_sl_v_preds,
+            sl_audio_predictions=s2_sl_a_preds,
+            num_events=self.num_events,
+        )
 
-        # stage three: TODO
+        # stage three: event interaction module
+        s3_vl_v_preds, s3_vl_a_preds = self.event_interaction(
+            video_features=video_embeddings,
+            audio_features=audio_embeddings,
+            video_event_features=ve_features,
+            audio_event_features=ae_features,
+            video_sl_event_predictions=s2_sl_v_preds,
+            audio_sl_event_predictions=s2_sl_a_preds,
+        )
 
         return (
             s1_vl_v_preds,
@@ -122,8 +144,8 @@ class LFAVModel(nn.Module):
             s2_vl_a_preds,
             s2_sl_v_preds,
             s2_sl_a_preds,
-            None,  # s3_vl_v_preds
-            None,  # s3_vl_a_preds
+            s3_vl_v_preds,
+            s3_vl_a_preds,
         )
 
 
@@ -167,10 +189,18 @@ if __name__ == "__main__":
     )
     preds = model(video_embeddings, audio_embeddings)
 
+    # fmt: off
+    # test shapes
     print(*(pred.shape for pred in preds if pred is not None), sep="\n")
+    assert all(pred.shape == (batch_size, num_events) for pred in preds[:2])
+    assert all(pred.shape == (batch_size, num_snippets, num_events) for pred in preds[2:4])  # noqa: E501
+    assert all(pred.shape == (batch_size, num_events) for pred in preds[4:6])
+    assert all(pred.shape == (batch_size, num_snippets, num_events) for pred in preds[6:8])  # noqa: E501
+    assert all(pred.shape == (batch_size, num_events) for pred in preds[8:])
+    # fmt: on
 
     # test diffentiability
-    loss = preds[-4].sum() + preds[-3].sum()
+    loss = preds[-1].sum() + preds[-2].sum()
     loss.backward()
     if torch.all(video_embeddings.grad == 0) or torch.all(audio_embeddings.grad == 0):
         if torch.all(video_embeddings.grad == 0):
