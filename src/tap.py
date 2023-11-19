@@ -34,6 +34,8 @@ class TemporalAttentionPooling(nn.Module):
             vl_audio_predictions: (batch_size, num_classes)
             sl_video_predictions: (batch_size, num_video_snippets, num_classes)
             sl_audio_predictions: (batch_size, num_audio_snippets, num_classes)
+            sl_fc: torch.nn.Module FC layer that takes in snippet embeddings and
+                outputs snippet-level predictions
         """
         sl_video_fc_out = self.sl_fc(video_snippet_embeddings)
         sl_audio_fc_out = self.sl_fc(audio_snippet_embeddings)
@@ -57,4 +59,5 @@ class TemporalAttentionPooling(nn.Module):
             vl_audio_predictions,
             sl_video_predictions,
             sl_audio_predictions,
+            self.sl_fc,
         )

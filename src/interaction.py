@@ -94,6 +94,10 @@ class EventInteractionModule(nn.Module):
                 (batch_size, num_snippets, num_events)
 
         Returns:
+            video_event_features: Video event features of
+                (batch_size, num_events, feature_dim)
+            audio_event_features: Audio event features of
+                (batch_size, num_events, feature_dim)
             video_event_predictions: Video event predictions of
                 (batch_size, num_events)
             audio_event_predictions: Audio event predictions of
@@ -112,7 +116,12 @@ class EventInteractionModule(nn.Module):
             audio_sl_event_predictions,
         )
 
-        return video_event_predictions, audio_event_predictions
+        return (
+            video_event_features,
+            audio_event_features,
+            video_event_predictions,
+            audio_event_predictions,
+        )
 
 
 class MultimodalAttentionBlock(nn.Module):

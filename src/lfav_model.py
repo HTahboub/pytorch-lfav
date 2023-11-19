@@ -5,7 +5,7 @@ from pyramid import PyramidMultimodalTransformer
 from tap import TemporalAttentionPooling
 from torch import nn
 
-# TODO: snippets -> 200
+# TODO: snippets -> 200?
 
 
 class LFAVModel(nn.Module):
@@ -100,7 +100,7 @@ class LFAVModel(nn.Module):
             video_snippet_embeddings=video_embeddings,
             audio_snippet_embeddings=audio_embeddings,
         )
-        s1_vl_v_preds, s1_vl_a_preds, s1_sl_v_preds, s1_sl_a_preds = self.tap_1(
+        s1_vl_v_preds, s1_vl_a_preds, s1_sl_v_preds, s1_sl_a_preds, _ = self.tap_1(
             video_snippet_embeddings=video_embeddings,
             audio_snippet_embeddings=audio_embeddings,
         )
@@ -113,7 +113,7 @@ class LFAVModel(nn.Module):
             audio_snippet_preds=s1_sl_a_preds,
             confidence_threshold=self.graph_confidence_threshold,
         )
-        s2_vl_v_preds, s2_vl_a_preds, s2_sl_v_preds, s2_sl_a_preds = self.tap_2(
+        s2_vl_v_preds, s2_vl_a_preds, s2_sl_v_preds, s2_sl_a_preds, tap_nn = self.tap_2(
             video_snippet_embeddings=video_embeddings,
             audio_snippet_embeddings=audio_embeddings,
         )
@@ -126,7 +126,7 @@ class LFAVModel(nn.Module):
         )
 
         # stage three: event interaction module
-        s3_vl_v_preds, s3_vl_a_preds = self.event_interaction(
+        s3out = self.event_interaction(
             video_features=video_embeddings,
             audio_features=audio_embeddings,
             video_event_features=ve_features,
@@ -134,6 +134,7 @@ class LFAVModel(nn.Module):
             video_sl_event_predictions=s2_sl_v_preds,
             audio_sl_event_predictions=s2_sl_a_preds,
         )
+        video_event_features, audio_event_features, s3_vl_v_preds, s3_vl_a_preds = s3out
 
         return (
             s1_vl_v_preds,
@@ -146,12 +147,187 @@ class LFAVModel(nn.Module):
             s2_sl_a_preds,
             s3_vl_v_preds,
             s3_vl_a_preds,
+            video_event_features,
+            audio_event_features,
+            tap_nn,
         )
+
+
+def train_one_epoch(
+    model, optimizer, criterion, dataloader, epoch, total_epochs, device
+):
+    """Train the model for one epoch.
+
+    Args:
+        model: LFAVModel
+        optimizer: torch.optim.Optimizer
+        criterion: torch.nn.Module
+        dataloader: torch.utils.data.DataLoader
+        epoch: int
+        total_epochs: int
+        device: torch.device
+
+    Returns:
+        total_loss: float
+    """
+    model.train()
+    total_loss = 0
+    for i, (video_embeddings, audio_embeddings, labels) in enumerate(dataloader):
+        video_embeddings = video_embeddings.to(device)
+        audio_embeddings = audio_embeddings.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+        preds = model(video_embeddings, audio_embeddings)
+        (
+            s1_vl_v_preds,
+            s1_vl_a_preds,
+            _,
+            _,
+            s2_vl_v_preds,
+            s2_vl_a_preds,
+            _,
+            _,
+            s3_vl_v_preds,
+            s3_vl_a_preds,
+            video_event_features,
+            audio_event_features,
+            tap_nn,
+        ) = preds
+        loss = criterion(
+            s1_vl_video_predictions=s1_vl_v_preds,
+            s1_vl_audio_predictions=s1_vl_a_preds,
+            s2_vl_video_predictions=s2_vl_v_preds,
+            s2_vl_audio_predictions=s2_vl_a_preds,
+            s3_vl_video_predictions=s3_vl_v_preds,
+            s3_vl_audio_predictions=s3_vl_a_preds,
+            vl_video_labels=labels,
+            vl_audio_labels=labels,
+            video_event_features=video_event_features,
+            audio_event_features=audio_event_features,
+            tap_nn=tap_nn,
+        )
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+        if i % 10 == 0:
+            print(f"Epoch [{epoch+1}/{total_epochs}]")
+            print(f"Batch [{i+1}/{len(dataloader)}]")
+            print(f"Loss: {loss.item():.4f}")
+            print()
+
+    return total_loss
+
+
+def train(
+    model,
+    optimizer,
+    criterion,
+    train_dataloader,
+    val_dataloader,
+    num_epochs,
+    device,
+):
+    """Train the model.
+
+    Args:
+        model: LFAVModel
+        optimizer: torch.optim.Optimizer
+        criterion: torch.nn.Module
+        train_dataloader: torch.utils.data.DataLoader
+        val_dataloader: torch.utils.data.DataLoader
+        num_epochs: int
+        device: torch.device
+
+    Returns:
+        model: LFAVModel
+    """
+    for epoch in range(num_epochs):
+        print(f"Epoch [{epoch+1}/{num_epochs}]")
+        train_loss = train_one_epoch(
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
+            dataloader=train_dataloader,
+            epoch=epoch,
+            total_epochs=num_epochs,
+            device=device,
+        )
+        val_loss = evaluate(
+            model=model,
+            criterion=criterion,
+            dataloader=val_dataloader,
+            device=device,
+        )
+        print(f"Train loss: {train_loss:.4f}")
+        print(f"Validation loss: {val_loss:.4f}")
+        print()
+
+    return model
+
+
+def evaluate(model, criterion, dataloader, device):
+    """Evaluate the model.
+
+    Args:
+        model: LFAVModel
+        criterion: torch.nn.Module
+        dataloader: torch.utils.data.DataLoader
+        device: torch.device
+
+    Returns:
+        total_loss: float
+    """
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for i, (video_embeddings, audio_embeddings, labels) in enumerate(dataloader):
+            video_embeddings = video_embeddings.to(device)
+            audio_embeddings = audio_embeddings.to(device)
+            labels = labels.to(device)
+
+            preds = model(video_embeddings, audio_embeddings)
+            (
+                s1_vl_v_preds,
+                s1_vl_a_preds,
+                _,
+                _,
+                s2_vl_v_preds,
+                s2_vl_a_preds,
+                _,
+                _,
+                s3_vl_v_preds,
+                s3_vl_a_preds,
+                video_event_features,
+                audio_event_features,
+                tap_nn,
+            ) = preds
+            loss = criterion(
+                s1_vl_video_predictions=s1_vl_v_preds,
+                s1_vl_audio_predictions=s1_vl_a_preds,
+                s2_vl_video_predictions=s2_vl_v_preds,
+                s2_vl_audio_predictions=s2_vl_a_preds,
+                s3_vl_video_predictions=s3_vl_v_preds,
+                s3_vl_audio_predictions=s3_vl_a_preds,
+                vl_video_labels=labels,
+                vl_audio_labels=labels,
+                video_event_features=video_event_features,
+                audio_event_features=audio_event_features,
+                tap_nn=tap_nn,
+            )
+
+            total_loss += loss.item()
+
+    return total_loss
 
 
 if __name__ == "__main__":
     # test small input
     batch_size = 4
+    num_batches = 5
+    num_videos = batch_size * num_batches
     num_snippets = 16
     video_dim = 4
     audio_dim = 2
@@ -191,16 +367,15 @@ if __name__ == "__main__":
 
     # fmt: off
     # test shapes
-    print(*(pred.shape for pred in preds if pred is not None), sep="\n")
     assert all(pred.shape == (batch_size, num_events) for pred in preds[:2])
     assert all(pred.shape == (batch_size, num_snippets, num_events) for pred in preds[2:4])  # noqa: E501
     assert all(pred.shape == (batch_size, num_events) for pred in preds[4:6])
     assert all(pred.shape == (batch_size, num_snippets, num_events) for pred in preds[6:8])  # noqa: E501
-    assert all(pred.shape == (batch_size, num_events) for pred in preds[8:])
+    assert all(pred.shape == (batch_size, num_events) for pred in preds[8:10])
     # fmt: on
 
     # test diffentiability
-    loss = preds[-1].sum() + preds[-2].sum()
+    loss = preds[-4].sum() + preds[-5].sum()
     loss.backward()
     if torch.all(video_embeddings.grad == 0) or torch.all(audio_embeddings.grad == 0):
         if torch.all(video_embeddings.grad == 0):
@@ -214,3 +389,51 @@ if __name__ == "__main__":
             print("Not differentiable w.r.t. audio_embeddings")
     else:
         print("Differentiable w.r.t. video_embeddings and audio_embeddings")
+
+    # test train
+    from loss import LFAVLoss
+    from torch import optim
+    from torch.utils.data import DataLoader
+    from utils.dataset import LFAVDataset
+
+    video_embeddings = torch.rand(
+        (num_videos, num_snippets, video_dim), device=device, requires_grad=True
+    )
+    audio_embeddings = torch.rand(
+        (num_videos, num_snippets, audio_dim), device=device, requires_grad=True
+    )
+    dataset = LFAVDataset(
+        video_embeddings=video_embeddings,
+        audio_embeddings=audio_embeddings,
+        labels=torch.rand((num_videos, num_events)),
+    )
+    train_dataloader = DataLoader(dataset, batch_size=batch_size)
+    val_dataloader = DataLoader(dataset, batch_size=batch_size)
+
+    model = LFAVModel(
+        device=device,
+        video_dim=video_dim,
+        audio_dim=audio_dim,
+        feature_dim=feature_dim,
+        num_pmt_heads=num_pmt_heads,
+        num_pmt_layers=num_pmt_layers,
+        pmt_dropout=pmt_dropout,
+        num_graph_heads=num_graph_heads,
+        gat_depth=gat_depth,
+        graph_dropout=graph_dropout,
+        graph_confidence_threshold=graph_confidence_threshold,
+        num_events=num_events,
+    )
+
+    optimizer = optim.Adam(model.parameters())
+    criterion = LFAVLoss()
+
+    model = train(
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        num_epochs=2,
+        device=device,
+    )
