@@ -14,6 +14,7 @@ ADJUSTED_SNIPPET_COUNT = 200
 # TODO get the labels
 # TODO convert to one-hot and pass in
 
+
 def _load_data_model(model):
     data = {}
     for file in glob(DATA_PATH.format(model=model) + "/*.npy"):
@@ -99,5 +100,9 @@ if __name__ == "__main__":
     # print(len(dataset))
     # print(dataset[0][0].shape)
     # print(dataset[0][1].shape)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(len(load_train_data(device)) + len(load_val_data(device)) + len(load_test_data(device)))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(
+        len(load_train_data(device))
+        + len(load_val_data(device))
+        + len(load_test_data(device))
+    )

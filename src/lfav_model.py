@@ -6,12 +6,6 @@ from pyramid import PyramidMultimodalTransformer
 from tap import TemporalAttentionPooling
 from torch import nn
 
-# TODO: snippets -> 200?
-
-wandb.init(
-    project="lfav",
-)
-
 
 class LFAVModel(nn.Module):
     def __init__(
@@ -40,7 +34,7 @@ class LFAVModel(nn.Module):
                 config[k] = v
 
         # init wandb
-        self.run = wandb.init(config=config)
+        self.run = wandb.init(project="lfav", config=config)
 
         self.feature_dim = feature_dim
         self.num_events = num_events
