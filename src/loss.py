@@ -5,9 +5,10 @@ from torch import nn
 class LFAVLoss(nn.Module):
     """Loss function implementation from the LFAV paper."""
 
-    def __init__(self):
+    def __init__(self, event_weight=0.3):
         super().__init__()
         self.bce = nn.BCELoss()
+        self.event_weight = event_weight
 
     def forward(
         self,
@@ -76,5 +77,5 @@ class LFAVLoss(nn.Module):
         lea /= num_events
         le = lev + lea
 
-        total_loss = l1 + l2 + l3 + le
+        total_loss = (1 - self.event_weight) * (l1 + l2 + l3) + self.event_weight * le
         return total_loss

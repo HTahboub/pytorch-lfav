@@ -1,4 +1,5 @@
 import torch
+import wandb
 from graph import GraphEventAttentionModule
 from interaction import EventInteractionModule
 from pyramid import PyramidMultimodalTransformer
@@ -6,6 +7,10 @@ from tap import TemporalAttentionPooling
 from torch import nn
 
 # TODO: snippets -> 200?
+
+wandb.init(
+    project="lfav",
+)
 
 
 class LFAVModel(nn.Module):
@@ -20,11 +25,23 @@ class LFAVModel(nn.Module):
         pmt_dropout=0.2,
         num_graph_heads=1,
         gat_depth=2,
-        graph_dropout=0.2,
+        graph_dropout=0.0,
+        event_dropout=0.0,
         graph_confidence_threshold=0.5,
         num_events=35,
     ):
         super().__init__()
+
+        # save hyperparams
+        config = {}
+        ignore = ["self", "device", "ignore"]
+        for k, v in locals().items():
+            if k not in ignore:
+                config[k] = v
+
+        # init wandb
+        self.run = wandb.init(config=config)
+
         self.feature_dim = feature_dim
         self.num_events = num_events
         self.graph_confidence_threshold = graph_confidence_threshold
@@ -58,7 +75,7 @@ class LFAVModel(nn.Module):
             feature_dim=feature_dim,
             num_events=num_events,
             num_layers=num_pmt_layers,
-            num_heads=num_pmt_heads,
+            num_heads=num_graph_heads,
             gat_depth=gat_depth,
             dropout=graph_dropout,
         )
@@ -68,7 +85,7 @@ class LFAVModel(nn.Module):
             feature_dim=feature_dim,
             num_events=num_events,
             num_heads=num_pmt_heads,
-            dropout=graph_dropout,
+            dropout=event_dropout,
             device=device,
         )
 
@@ -153,6 +170,57 @@ class LFAVModel(nn.Module):
         )
 
 
+def train(
+    model,
+    optimizer,
+    scheduler,
+    criterion,
+    train_dataloader,
+    val_dataloader,
+    num_epochs,
+    device,
+):
+    """Train the model.
+
+    Args:
+        model: LFAVModel
+        optimizer: torch.optim.Optimizer
+        scheduler: torch.optim.lr_scheduler
+        criterion: torch.nn.Module
+        train_dataloader: torch.utils.data.DataLoader
+        val_dataloader: torch.utils.data.DataLoader
+        num_epochs: int
+        device: torch.device
+
+    Returns:
+        model: LFAVModel
+    """
+    for epoch in range(num_epochs):
+        print(f"Epoch [{epoch+1}/{num_epochs}]")
+        train_loss = train_one_epoch(
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
+            dataloader=train_dataloader,
+            epoch=epoch,
+            total_epochs=num_epochs,
+            device=device,
+        )
+        scheduler.step()
+        val_loss = evaluate(
+            model=model,
+            criterion=criterion,
+            dataloader=val_dataloader,
+            device=device,
+            epoch=epoch,
+        )
+        print(f"Train loss: {train_loss:.4f}")
+        print(f"Validation loss: {val_loss:.4f}")
+        print()
+
+    return model
+
+
 def train_one_epoch(
     model, optimizer, criterion, dataloader, epoch, total_epochs, device
 ):
@@ -210,65 +278,24 @@ def train_one_epoch(
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item()
+        batch_loss = loss.item()
+        total_loss += batch_loss
 
         if i % 10 == 0:
-            print(f"Epoch [{epoch+1}/{total_epochs}]")
-            print(f"Batch [{i+1}/{len(dataloader)}]")
-            print(f"Loss: {loss.item():.4f}")
-            print()
+            model.run.log(
+                {
+                    "batch_loss": batch_loss,
+                    "epoch": epoch,
+                    "step": i + epoch * len(dataloader),
+                }
+            )
 
+    total_loss /= len(dataloader)
+    model.run.log({"train_loss": total_loss, "epoch": epoch})
     return total_loss
 
 
-def train(
-    model,
-    optimizer,
-    criterion,
-    train_dataloader,
-    val_dataloader,
-    num_epochs,
-    device,
-):
-    """Train the model.
-
-    Args:
-        model: LFAVModel
-        optimizer: torch.optim.Optimizer
-        criterion: torch.nn.Module
-        train_dataloader: torch.utils.data.DataLoader
-        val_dataloader: torch.utils.data.DataLoader
-        num_epochs: int
-        device: torch.device
-
-    Returns:
-        model: LFAVModel
-    """
-    for epoch in range(num_epochs):
-        print(f"Epoch [{epoch+1}/{num_epochs}]")
-        train_loss = train_one_epoch(
-            model=model,
-            optimizer=optimizer,
-            criterion=criterion,
-            dataloader=train_dataloader,
-            epoch=epoch,
-            total_epochs=num_epochs,
-            device=device,
-        )
-        val_loss = evaluate(
-            model=model,
-            criterion=criterion,
-            dataloader=val_dataloader,
-            device=device,
-        )
-        print(f"Train loss: {train_loss:.4f}")
-        print(f"Validation loss: {val_loss:.4f}")
-        print()
-
-    return model
-
-
-def evaluate(model, criterion, dataloader, device):
+def evaluate(model, criterion, dataloader, device, epoch=None):
     """Evaluate the model.
 
     Args:
@@ -317,9 +344,10 @@ def evaluate(model, criterion, dataloader, device):
                 audio_event_features=audio_event_features,
                 tap_nn=tap_nn,
             )
-
             total_loss += loss.item()
-
+    total_loss /= len(dataloader)
+    if epoch is not None:
+        model.run.log({"val_loss": total_loss, "epoch": epoch})
     return total_loss
 
 
