@@ -6,11 +6,9 @@ import numpy as np
 from torch.utils.data import TensorDataset
 
 DATA_PATH = "/work/vig/Datasets/LFAV/features/{model}"
-MODELS = ["r2plus1d", "resnet18", "vggish"]
 ADJUSTED_SNIPPET_COUNT = 200
 
 
-# TODO double check if joint data is useful
 # TODO get the labels
 # TODO convert to one-hot and pass in
 
@@ -47,6 +45,28 @@ def map_snippet_number(
         return original_snippet_number * repeat_n
     else:
         return original_snippet_number
+
+
+def _create_label_index(labels):
+    """Label integer index for one-hot encoding."""
+    label_index = {}
+    for i, label in enumerate(labels):
+        label_index[label] = i
+    return label_index
+
+
+def _load_vl_labels(modality, split, label_index):
+    """Load video-level labels as one-hot vectors."""
+    assert modality in ["visual", "audio"]
+    assert split in ["train", "val", "test"]
+    path = f"/work/vig/Datasets/LFAV/annotations/{split}/{split}_{modality}_weakly.csv"
+    labels = []
+    for vals in list(csv.reader(open(path, "r"), delimiter="\t"))[1:]:
+        label = torch.zeros(len(label_index))
+        for label_name in vals[1].split(","):
+            label[label_index[label_name]] = 1
+        labels.append(label)
+    return torch.stack(labels)
 
 
 def _load_data(ids, device):
@@ -100,9 +120,12 @@ if __name__ == "__main__":
     # print(len(dataset))
     # print(dataset[0][0].shape)
     # print(dataset[0][1].shape)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(
-        len(load_train_data(device))
-        + len(load_val_data(device))
-        + len(load_test_data(device))
-    )
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # print(
+    #     len(load_train_data(device))
+    #     + len(load_val_data(device))
+    #     + len(load_test_data(device))
+    # )
+    labels = _load_vl_labels("audio", "train", _create_label_index(["Speech"]))
+    print(labels.shape)
+    print(labels[0])
