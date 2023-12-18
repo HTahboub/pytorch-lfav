@@ -50,6 +50,9 @@ class LFAVLoss(nn.Module):
 
         Returns:
             total_loss: Total loss of the LFAV model
+            f1_video: F1 score of the video predictions
+            f1_audio: F1 score of the audio predictions
+            f1_av: F1 score of the audio-visual predictions
         """
         batch_size, num_events, _ = video_event_features.shape
         l1_v = self.bce(s1_vl_video_predictions, vl_video_labels)
@@ -78,4 +81,53 @@ class LFAVLoss(nn.Module):
         le = lev + lea
 
         total_loss = (1 - self.event_weight) * (l1 + l2 + l3) + self.event_weight * le
-        return total_loss
+
+        # audio-visual version: turn on preds and labels from both
+        av_preds = torch.logical_or(
+            torch.round(s2_vl_video_predictions), torch.round(s2_vl_audio_predictions)
+        ).float()
+        av_labels = torch.logical_or(vl_video_labels, vl_audio_labels).float()
+
+        # compute metrics required for F1 scores
+        tp_video = torch.sum(
+            torch.round(s2_vl_video_predictions) * vl_video_labels
+        ).float()
+        tp_audio = torch.sum(
+            torch.round(s2_vl_audio_predictions) * vl_audio_labels
+        ).float()
+        tp_av = torch.sum(av_preds * av_labels).float()
+
+        fp_video = torch.sum(
+            torch.round(s2_vl_video_predictions) * (1 - vl_video_labels)
+        ).float()
+        fp_audio = torch.sum(
+            torch.round(s2_vl_audio_predictions) * (1 - vl_audio_labels)
+        ).float()
+        fp_av = torch.sum(av_preds * (1 - av_labels)).float()
+
+        fn_video = torch.sum(
+            (1 - torch.round(s2_vl_video_predictions)) * vl_video_labels
+        ).float()
+        fn_audio = torch.sum(
+            (1 - torch.round(s2_vl_audio_predictions)) * vl_audio_labels
+        ).float()
+        fn_av = torch.sum((1 - av_preds) * av_labels).float()
+
+        precision_video = tp_video / (tp_video + fp_video)
+        precision_audio = tp_audio / (tp_audio + fp_audio)
+        precision_av = tp_av / (tp_av + fp_av)
+
+        recall_video = tp_video / (tp_video + fn_video)
+        recall_audio = tp_audio / (tp_audio + fn_audio)
+        recall_av = tp_av / (tp_av + fn_av)
+
+        # final F1 scores for each component
+        f1_video = 2 * (precision_video * recall_video) / (
+            precision_video + recall_video
+        )
+        f1_audio = 2 * (precision_audio * recall_audio) / (
+            precision_audio + recall_audio
+        )
+        f1_av = 2 * (precision_av * recall_av) / (precision_av + recall_av)
+
+        return total_loss, f1_video, f1_audio, f1_av

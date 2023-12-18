@@ -2,6 +2,11 @@ import torch
 from torch import nn
 import numpy as np
 
+"""
+The majority of this file was written by Aleksa Gordić and shared on Github in the
+repository gordicaleksa/pytorch-GAT under the MIT license.
+"""
+
 
 class GraphAttentionNetwork(nn.Module):
     """Graph Attention Network (GAT) based on work by P. Veličković et al. in
@@ -318,7 +323,7 @@ if __name__ == "__main__":
                 i
                 for i in range(num_of_nodes * batch, num_of_nodes * (batch + 1))
                 if i != node_id
-            ],  # fmt: skip # noqa: E501
+            ],
             num_of_neighbors,
             replace=False,
         ).tolist()

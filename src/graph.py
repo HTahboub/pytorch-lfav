@@ -65,12 +65,14 @@ class GraphEventAttentionModule(nn.Module):
         """
         batch_size, num_snippets = snippet_preds.shape
         adj_dict = {node: [] for node in range(batch_size * num_snippets)}
+        num_edges = 0
         # we will make batch_size disconnected graphs
         for i in range(snippet_preds.shape[0]):
             # temporal edges
             for j in range(num_snippets * i, num_snippets * (i + 1) - 1):
                 adj_dict[j].append(j + 1)
                 adj_dict[j + 1].append(j)
+                num_edges += 2
             # semantic edges
             nodes = []
             for j in range(num_snippets * i, num_snippets * (i + 1)):
@@ -80,6 +82,8 @@ class GraphEventAttentionModule(nn.Module):
                 for other_node in nodes:
                     if node != other_node and other_node not in adj_dict[node]:
                         adj_dict[node].append(other_node)
+                        num_edges += 1
+        # print(num_edges)
         return adj_dict
 
     @staticmethod
@@ -153,6 +157,7 @@ class GraphEventAttentionModule(nn.Module):
         batch_size, num_snippets, feature_dim = audio_features.shape
         audio_event_adj = []
         video_event_adj = []
+        # print(torch.cuda.memory_summary())
         for i in range(self.num_events):
             audio_adj = GraphEventAttentionModule._build_adjacency(
                 audio_snippet_preds[:, :, i], confidence_threshold
@@ -172,26 +177,32 @@ class GraphEventAttentionModule(nn.Module):
             )
             audio_event_adj.append(audio_adj)
             video_event_adj.append(video_adj)
+        # print(torch.cuda.memory_summary())
 
         # audio
+        temp_audio = torch.zeros_like(audio_features)
         for module in self.audio_modules:
-            aggregated = torch.zeros_like(audio_features)
+            temp_audio.zero_()
             for i in range(self.num_events):
                 gat_features, _ = module(
                     (audio_features.reshape(-1, self.feature_dim), audio_event_adj[i])
                 )
-                aggregated += gat_features.view(*audio_features.shape)
-            audio_features = aggregated / self.num_events
+                temp_audio += gat_features.view(*audio_features.shape)
+            audio_features = temp_audio / self.num_events
+        # print(torch.cuda.memory_summary())
 
         # video
+        temp_video = torch.zeros_like(video_features)
         for module in self.video_modules:
-            aggregated = torch.zeros_like(video_features)
+            temp_video.zero_()
             for i in range(self.num_events):
                 gat_features, _ = module(
                     (video_features.reshape(-1, self.feature_dim), video_event_adj[i])
                 )
-                aggregated += gat_features.view(*video_features.shape)
-            video_features = aggregated / self.num_events
+                temp_video += gat_features.view(*video_features.shape)
+            video_features = temp_video / self.num_events
+
+        # print(torch.cuda.memory_summary()))
 
         return video_features, audio_features
 

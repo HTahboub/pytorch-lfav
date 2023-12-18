@@ -7,10 +7,8 @@ from torch.utils.data import TensorDataset
 
 DATA_PATH = "/work/vig/Datasets/LFAV/features/{model}"
 ADJUSTED_SNIPPET_COUNT = 200
-
-
-# TODO get the labels
-# TODO convert to one-hot and pass in
+IGNORE_LABELS = ["toilet_flush", "train", "silent"]
+NUM_EVENTS = 35
 
 
 def _load_data_model(model):
@@ -47,29 +45,88 @@ def map_snippet_number(
         return original_snippet_number
 
 
-def _create_label_index(labels):
+def _create_label_index():
     """Label integer index for one-hot encoding."""
+    labels = [
+        "guitar",
+        "drum",
+        "violin",
+        "piano",
+        "accordion",
+        "banjo",
+        "cello",
+        "shofar",
+        "speech",
+        "singing",
+        "cry",
+        ("laughing", "laughter"),
+        "clapping",
+        "cheering",
+        "dance",
+        "dog",
+        "cat",
+        "chicken_rooster",
+        "horse",
+        "rodents",
+        "car",
+        "helicopter",
+        "fixed-wing_aircraft",
+        "bicycle",
+        "alarm",
+        "chainsaw",
+        "car_alarm",
+        "frisbee",
+        "playing_basketball",
+        "playing_baseball",
+        "playing_badminton",
+        "playing_volleyball",
+        "playing_tennis",
+        "playing_ping-pong",
+        "playing_soccer",
+    ]
     label_index = {}
     for i, label in enumerate(labels):
-        label_index[label] = i
+        if isinstance(label, tuple):
+            for label_part in label:
+                label_index[label_part] = i
+        else:
+            label_index[label] = i
     return label_index
 
 
-def _load_vl_labels(modality, split, label_index):
+def _load_vl_labels_one(modality, split, label_index):
     """Load video-level labels as one-hot vectors."""
     assert modality in ["visual", "audio"]
     assert split in ["train", "val", "test"]
     path = f"/work/vig/Datasets/LFAV/annotations/{split}/{split}_{modality}_weakly.csv"
     labels = []
     for vals in list(csv.reader(open(path, "r"), delimiter="\t"))[1:]:
-        label = torch.zeros(len(label_index))
+        label = torch.zeros(NUM_EVENTS)
         for label_name in vals[1].split(","):
-            label[label_index[label_name]] = 1
+            if label_name.strip() not in IGNORE_LABELS:
+                label[label_index[label_name.strip()]] = 1
         labels.append(label)
     return torch.stack(labels)
 
 
-def _load_data(ids, device):
+def _load_vl_labels(split):
+    label_index = _create_label_index()
+    if split == "train":
+        visual = _load_vl_labels_one("visual", "train", label_index)
+        audio = _load_vl_labels_one("audio", "train", label_index)
+    elif split == "val":
+        visual = _load_vl_labels_one("visual", "val", label_index)
+        audio = _load_vl_labels_one("audio", "val", label_index)
+    elif split == "test":
+        visual = _load_vl_labels_one("visual", "test", label_index)
+        audio = _load_vl_labels_one("audio", "test", label_index)
+    else:
+        raise Exception(f"Split {split} should be in ['train', 'val', 'test'].")
+
+    return visual, audio
+
+
+def _load_data(ids, split, device, overfit=None):
     r2plus1d = _load_data_model("r2plus1d")
     resnet18 = _load_data_model("resnet18")
     vggish = _load_data_model("vggish")
@@ -90,42 +147,50 @@ def _load_data(ids, device):
     video_embeddings = torch.cat((r2plus1d, resnet18), dim=2).to(device)
     audio_embeddings = vggish.to(device)
 
-    dataset = TensorDataset(video_embeddings, audio_embeddings)
+    visual_labels, audio_labels = _load_vl_labels(split)
+    assert len(video_embeddings) == len(visual_labels)
+    assert len(audio_embeddings) == len(audio_labels)
+
+    if overfit is not None:  # already seeded
+        indices = torch.randperm(len(video_embeddings))[:overfit]
+        video_embeddings = video_embeddings[indices]
+        audio_embeddings = audio_embeddings[indices]
+        visual_labels = visual_labels[indices]
+        audio_labels = audio_labels[indices]
+
+    dataset = TensorDataset(
+        video_embeddings, audio_embeddings, visual_labels, audio_labels
+    )
     return dataset
 
 
-def load_train_data(device):
+def load_train_data(device, overfit_batch=False, batch_size=None):
+    if overfit_batch:
+        assert batch_size is not None
     path = "/work/vig/Datasets/LFAV/annotations/train/train_audio_weakly.csv"
     ids = [vals[0] for vals in list(csv.reader(open(path, "r"), delimiter="\t"))[1:]]
-    data = _load_data(ids, device)
+    data = _load_data(ids, "train", device, overfit=batch_size)
     return data
 
 
 def load_val_data(device):
     path = "/work/vig/Datasets/LFAV/annotations/val/val_audio_weakly.csv"
     ids = [vals[0] for vals in list(csv.reader(open(path, "r"), delimiter="\t"))[1:]]
-    data = _load_data(ids, device)
+    data = _load_data(ids, "val", device)
     return data
 
 
 def load_test_data(device):
     path = "/work/vig/Datasets/LFAV/annotations/test/test_audio_weakly.csv"
     ids = [vals[0] for vals in list(csv.reader(open(path, "r"), delimiter="\t"))[1:]]
-    data = _load_data(ids, device)
+    data = _load_data(ids, "test", device)
     return data
 
 
 if __name__ == "__main__":
-    # dataset = load_data()
-    # print(len(dataset))
-    # print(dataset[0][0].shape)
-    # print(dataset[0][1].shape)
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # print(
-    #     len(load_train_data(device))
-    #     + len(load_val_data(device))
-    #     + len(load_test_data(device))
-    # )
-    labels = _load_vl_labels("audio", "train", _create_label_index(["Speech"]))
-    print(labels.shape)
-    print(labels[0])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(
+        len(load_train_data(device))
+        + len(load_val_data(device))
+        + len(load_test_data(device))
+    )

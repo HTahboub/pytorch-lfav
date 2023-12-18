@@ -1,3 +1,4 @@
+import os
 import torch
 import wandb
 from graph import GraphEventAttentionModule
@@ -7,10 +8,14 @@ from tap import TemporalAttentionPooling
 from torch import nn
 
 
+CHECKPOINT_PATH = "/scratch/tahboub.h/checkpoints/lfav/"
+
+
 class LFAVModel(nn.Module):
     def __init__(
         self,
         device,
+        overfit=False,
         video_dim=1024,
         audio_dim=128,
         feature_dim=512,
@@ -21,23 +26,20 @@ class LFAVModel(nn.Module):
         gat_depth=2,
         graph_dropout=0.0,
         event_dropout=0.0,
-        graph_confidence_threshold=0.5,
+        graph_confidence_threshold=0.51,
         num_events=35,
     ):
         super().__init__()
 
         # save hyperparams
-        config = {}
         ignore = ["self", "device", "ignore"]
         for k, v in locals().items():
             if k not in ignore:
-                config[k] = v
-
-        # init wandb
-        self.run = wandb.init(project="lfav", config=config)
+                wandb.config[k] = v
 
         self.feature_dim = feature_dim
         self.num_events = num_events
+
         self.graph_confidence_threshold = graph_confidence_threshold
 
         # pre-stage
@@ -60,7 +62,7 @@ class LFAVModel(nn.Module):
             feature_dim=feature_dim,
             num_heads=num_pmt_heads,
             num_layers=num_pmt_layers,
-            dropout=pmt_dropout,
+            dropout=pmt_dropout if not overfit else 0,
             device=device,
         )
 
@@ -71,7 +73,7 @@ class LFAVModel(nn.Module):
             num_layers=num_pmt_layers,
             num_heads=num_graph_heads,
             gat_depth=gat_depth,
-            dropout=graph_dropout,
+            dropout=graph_dropout if not overfit else 0,
         )
 
         # stage three
@@ -79,7 +81,7 @@ class LFAVModel(nn.Module):
             feature_dim=feature_dim,
             num_events=num_events,
             num_heads=num_pmt_heads,
-            dropout=event_dropout,
+            dropout=event_dropout if not overfit else 0,
             device=device,
         )
 
@@ -160,7 +162,7 @@ class LFAVModel(nn.Module):
             s3_vl_a_preds,
             video_event_features,
             audio_event_features,
-            tap_nn,
+            tap_nn,  # hacky
         )
 
 
@@ -172,6 +174,7 @@ def train(
     train_dataloader,
     val_dataloader,
     num_epochs,
+    experiment,
     device,
 ):
     """Train the model.
@@ -182,8 +185,9 @@ def train(
         scheduler: torch.optim.lr_scheduler
         criterion: torch.nn.Module
         train_dataloader: torch.utils.data.DataLoader
-        val_dataloader: torch.utils.data.DataLoader
+        val_dataloader: torch.utils.data.DataLoader | None
         num_epochs: int
+        experiment: str
         device: torch.device
 
     Returns:
@@ -201,16 +205,35 @@ def train(
             device=device,
         )
         scheduler.step()
-        val_loss = evaluate(
-            model=model,
-            criterion=criterion,
-            dataloader=val_dataloader,
-            device=device,
-            epoch=epoch,
-        )
+        if val_dataloader is not None:
+            val_loss = evaluate(
+                model=model,
+                criterion=criterion,
+                dataloader=val_dataloader,
+                device=device,
+                epoch=epoch,
+            )
         print(f"Train loss: {train_loss:.4f}")
-        print(f"Validation loss: {val_loss:.4f}")
-        print()
+        if val_dataloader is not None:
+            print(f"Validation loss: {val_loss:.4f}")
+            print()
+
+        # save checkpoint
+        if epoch % 10 == 0 or epoch == num_epochs - 1:
+            ckpt_path = os.path.join(CHECKPOINT_PATH, experiment)
+            os.makedirs(ckpt_path, exist_ok=True)
+            ckpt_path = os.path.join(ckpt_path, str(len(os.listdir(ckpt_path))))
+            os.makedirs(ckpt_path, exist_ok=False)
+
+            ckpt = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "train_loss": train_loss,
+                "val_loss": val_loss if val_dataloader is not None else None,
+            }
+            torch.save(ckpt, os.path.join(ckpt_path, f"epoch_{epoch}.ckpt"))
 
     return model
 
@@ -234,11 +257,17 @@ def train_one_epoch(
     """
     model.train()
     total_loss = 0
-    for i, (video_embeddings, audio_embeddings, labels) in enumerate(dataloader):
+    total_f1_video, total_f1_audio, total_f1_av = 0, 0, 0
+    for i, (
+        video_embeddings,
+        audio_embeddings,
+        video_labels,
+        audio_labels,
+    ) in enumerate(dataloader):
         video_embeddings = video_embeddings.to(device)
         audio_embeddings = audio_embeddings.to(device)
-        labels = labels.to(device)
-
+        video_labels = video_labels.to(device)
+        audio_labels = audio_labels.to(device)
         optimizer.zero_grad()
         preds = model(video_embeddings, audio_embeddings)
         (
@@ -256,15 +285,23 @@ def train_one_epoch(
             audio_event_features,
             tap_nn,
         ) = preds
-        loss = criterion(
+
+        s1_vl_v_preds = torch.sigmoid(s1_vl_v_preds)
+        s1_vl_a_preds = torch.sigmoid(s1_vl_a_preds)
+        s2_vl_v_preds = torch.sigmoid(s2_vl_v_preds)
+        s2_vl_a_preds = torch.sigmoid(s2_vl_a_preds)
+        s3_vl_v_preds = torch.sigmoid(s3_vl_v_preds)
+        s3_vl_a_preds = torch.sigmoid(s3_vl_a_preds)
+
+        loss, f1_video, f1_audio, f1_av = criterion(
             s1_vl_video_predictions=s1_vl_v_preds,
             s1_vl_audio_predictions=s1_vl_a_preds,
             s2_vl_video_predictions=s2_vl_v_preds,
             s2_vl_audio_predictions=s2_vl_a_preds,
             s3_vl_video_predictions=s3_vl_v_preds,
             s3_vl_audio_predictions=s3_vl_a_preds,
-            vl_video_labels=labels,
-            vl_audio_labels=labels,
+            vl_video_labels=video_labels,
+            vl_audio_labels=audio_labels,
             video_event_features=video_event_features,
             audio_event_features=audio_event_features,
             tap_nn=tap_nn,
@@ -272,20 +309,39 @@ def train_one_epoch(
         loss.backward()
         optimizer.step()
 
+        print(epoch, s2_vl_v_preds == s3_vl_v_preds and s2_vl_a_preds == s3_vl_a_preds, loss.item(), s2_vl_v_preds, s2_vl_a_preds)
+
         batch_loss = loss.item()
         total_loss += batch_loss
+        total_f1_video += f1_video
+        total_f1_audio += f1_audio
+        total_f1_av += f1_av
 
-        if i % 10 == 0:
-            model.run.log(
+        if i % 10 == 0 and len(dataloader) > 10:
+            wandb.log(
                 {
-                    "batch_loss": batch_loss,
+                    "batch_train_loss": batch_loss,
+                    "batch_train_f1_video": f1_video,
+                    "batch_train_f1_audio": f1_audio,
+                    "batch_train_f1_av": f1_av,
                     "epoch": epoch,
                     "step": i + epoch * len(dataloader),
                 }
             )
 
     total_loss /= len(dataloader)
-    model.run.log({"train_loss": total_loss, "epoch": epoch})
+    total_f1_video /= len(dataloader)
+    total_f1_audio /= len(dataloader)
+    total_f1_av /= len(dataloader)
+    wandb.log(
+        {
+            "train_loss": total_loss,
+            "train_f1_video": total_f1_video,
+            "train_f1_audio": total_f1_audio,
+            "train_f1_av": total_f1_av,
+            "epoch": epoch,
+        }
+    )
     return total_loss
 
 
@@ -303,11 +359,18 @@ def evaluate(model, criterion, dataloader, device, epoch=None):
     """
     model.eval()
     total_loss = 0
+    total_f1_video, total_f1_audio, total_f1_av = 0, 0, 0
     with torch.no_grad():
-        for i, (video_embeddings, audio_embeddings, labels) in enumerate(dataloader):
+        for i, (
+            video_embeddings,
+            audio_embeddings,
+            video_labels,
+            audio_labels,
+        ) in enumerate(dataloader):
             video_embeddings = video_embeddings.to(device)
             audio_embeddings = audio_embeddings.to(device)
-            labels = labels.to(device)
+            video_labels = video_labels.to(device)
+            audio_labels = audio_labels.to(device)
 
             preds = model(video_embeddings, audio_embeddings)
             (
@@ -325,23 +388,37 @@ def evaluate(model, criterion, dataloader, device, epoch=None):
                 audio_event_features,
                 tap_nn,
             ) = preds
-            loss = criterion(
+            loss, f1_video, f1_audio, f1_av = criterion(
                 s1_vl_video_predictions=s1_vl_v_preds,
                 s1_vl_audio_predictions=s1_vl_a_preds,
                 s2_vl_video_predictions=s2_vl_v_preds,
                 s2_vl_audio_predictions=s2_vl_a_preds,
                 s3_vl_video_predictions=s3_vl_v_preds,
                 s3_vl_audio_predictions=s3_vl_a_preds,
-                vl_video_labels=labels,
-                vl_audio_labels=labels,
+                vl_video_labels=video_labels,
+                vl_audio_labels=audio_labels,
                 video_event_features=video_event_features,
                 audio_event_features=audio_event_features,
                 tap_nn=tap_nn,
             )
             total_loss += loss.item()
+            total_f1_video += f1_video
+            total_f1_audio += f1_audio
+            total_f1_av += f1_av
     total_loss /= len(dataloader)
+    total_f1_video /= len(dataloader)
+    total_f1_audio /= len(dataloader)
+    total_f1_av /= len(dataloader)
     if epoch is not None:
-        model.run.log({"val_loss": total_loss, "epoch": epoch})
+        wandb.log(
+            {
+                "val_loss": total_loss,
+                "val_f1_video": total_f1_video,
+                "val_f1_audio": total_f1_audio,
+                "val_f1_av": total_f1_av,
+                "epoch": epoch,
+            }
+        )
     return total_loss
 
 
@@ -415,8 +492,7 @@ if __name__ == "__main__":
     # test train
     from loss import LFAVLoss
     from torch import optim
-    from torch.utils.data import DataLoader
-    from utils.dataset import LFAVDataset
+    from torch.utils.data import DataLoader, TensorDataset
 
     video_embeddings = torch.rand(
         (num_videos, num_snippets, video_dim), device=device, requires_grad=True
@@ -424,10 +500,11 @@ if __name__ == "__main__":
     audio_embeddings = torch.rand(
         (num_videos, num_snippets, audio_dim), device=device, requires_grad=True
     )
-    dataset = LFAVDataset(
-        video_embeddings=video_embeddings,
-        audio_embeddings=audio_embeddings,
-        labels=torch.rand((num_videos, num_events)),
+    dataset = TensorDataset(
+        video_embeddings,
+        audio_embeddings,
+        torch.rand((num_videos, num_events)),
+        torch.rand((num_videos, num_events)),
     )
     train_dataloader = DataLoader(dataset, batch_size=batch_size)
     val_dataloader = DataLoader(dataset, batch_size=batch_size)
