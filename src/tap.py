@@ -48,10 +48,10 @@ class TemporalAttentionPooling(nn.Module):
         audio_snippet_weights = torch.softmax(vl_audio_fc_out, dim=1)
 
         vl_video_predictions = torch.sum(
-            video_snippet_weights * sl_video_predictions, dim=1
+            video_snippet_weights * sl_video_fc_out, dim=1
         )
         vl_audio_predictions = torch.sum(
-            audio_snippet_weights * sl_audio_predictions, dim=1
+            audio_snippet_weights * sl_audio_fc_out, dim=1
         )
 
         return (

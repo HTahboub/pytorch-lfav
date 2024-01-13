@@ -257,7 +257,7 @@ def train_one_epoch(
     """
     model.train()
     total_loss = 0
-    total_f1_video, total_f1_audio, total_f1_av = 0, 0, 0
+    total_f1_video = total_f1_audio = total_f1_av = 0
     for i, (
         video_embeddings,
         audio_embeddings,
@@ -286,6 +286,8 @@ def train_one_epoch(
             tap_nn,
         ) = preds
 
+
+
         s1_vl_v_preds = torch.sigmoid(s1_vl_v_preds)
         s1_vl_a_preds = torch.sigmoid(s1_vl_a_preds)
         s2_vl_v_preds = torch.sigmoid(s2_vl_v_preds)
@@ -308,8 +310,6 @@ def train_one_epoch(
         )
         loss.backward()
         optimizer.step()
-
-        print(epoch, s2_vl_v_preds == s3_vl_v_preds and s2_vl_a_preds == s3_vl_a_preds, loss.item(), s2_vl_v_preds, s2_vl_a_preds)
 
         batch_loss = loss.item()
         total_loss += batch_loss
@@ -359,7 +359,7 @@ def evaluate(model, criterion, dataloader, device, epoch=None):
     """
     model.eval()
     total_loss = 0
-    total_f1_video, total_f1_audio, total_f1_av = 0, 0, 0
+    total_f1_video = total_f1_audio = total_f1_av = 0
     with torch.no_grad():
         for i, (
             video_embeddings,

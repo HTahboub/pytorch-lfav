@@ -9,7 +9,7 @@ from loss import LFAVLoss
 
 
 BATCH_SIZE = 4
-NUM_EPOCHS = 20
+NUM_EPOCHS = 30
 STAGE_ONE_LR = 1e-4
 STAGE_TWO_LR = 1e-4
 STAGE_THREE_LR = 2e-4
@@ -18,7 +18,7 @@ LR_STEP_SIZE = 10
 LR_GAMMA = 0.1
 SEED = 42
 OVERFIT_BATCH = True
-EXPERIMENT_NAME = "overfit"
+EXPERIMENT_NAME = "overfit_raw_logits"
 
 
 if __name__ == "__main__":

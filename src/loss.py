@@ -122,12 +122,17 @@ class LFAVLoss(nn.Module):
         recall_av = tp_av / (tp_av + fn_av)
 
         # final F1 scores for each component
-        f1_video = 2 * (precision_video * recall_video) / (
-            precision_video + recall_video
+        eps = 1e-5
+        f1_video = (
+            2
+            * (precision_video * recall_video)
+            / (precision_video + recall_video + eps)
         )
-        f1_audio = 2 * (precision_audio * recall_audio) / (
-            precision_audio + recall_audio
+        f1_audio = (
+            2
+            * (precision_audio * recall_audio)
+            / (precision_audio + recall_audio + eps)
         )
-        f1_av = 2 * (precision_av * recall_av) / (precision_av + recall_av)
+        f1_av = 2 * (precision_av * recall_av) / (precision_av + recall_av + eps)
 
         return total_loss, f1_video, f1_audio, f1_av
